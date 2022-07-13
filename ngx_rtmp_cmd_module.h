@@ -45,6 +45,9 @@ typedef struct {
     double                          stream;
 } ngx_rtmp_delete_stream_t;
 
+typedef struct {
+	// TODO add parameters from metadata like width/height/framerate
+} ngx_rtmp_metadata_t;
 
 typedef struct {
     double                          stream;
@@ -110,6 +113,8 @@ typedef ngx_int_t (*ngx_rtmp_close_stream_pt)(ngx_rtmp_session_t *s,
         ngx_rtmp_close_stream_t *v);
 typedef ngx_int_t (*ngx_rtmp_delete_stream_pt)(ngx_rtmp_session_t *s,
         ngx_rtmp_delete_stream_t *v);
+typedef ngx_int_t (*ngx_rtmp_metadata_pt)(ngx_rtmp_session_t *s,
+        ngx_rtmp_metadata_t *v);
 typedef ngx_int_t (*ngx_rtmp_publish_pt)(ngx_rtmp_session_t *s,
         ngx_rtmp_publish_t *v);
 typedef ngx_int_t (*ngx_rtmp_play_pt)(ngx_rtmp_session_t *s,
@@ -140,6 +145,7 @@ extern ngx_rtmp_publish_pt          ngx_rtmp_publish;
 extern ngx_rtmp_play_pt             ngx_rtmp_play;
 extern ngx_rtmp_seek_pt             ngx_rtmp_seek;
 extern ngx_rtmp_pause_pt            ngx_rtmp_pause;
+extern ngx_rtmp_metadata_pt         ngx_rtmp_metadata;
 
 extern ngx_rtmp_stream_begin_pt     ngx_rtmp_stream_begin;
 extern ngx_rtmp_stream_eof_pt       ngx_rtmp_stream_eof;

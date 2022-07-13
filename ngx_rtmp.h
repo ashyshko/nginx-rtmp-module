@@ -211,6 +211,8 @@ typedef struct {
     uint32_t                buflen;
     uint32_t                ack_size;
 
+    unsigned                waiting_metadata_response:1;
+
     /* connection parameters */
     ngx_str_t               app;
     ngx_str_t               args;

@@ -31,6 +31,8 @@ static ngx_int_t ngx_rtmp_cmd_seek(ngx_rtmp_session_t *s,
        ngx_rtmp_seek_t *v);
 static ngx_int_t ngx_rtmp_cmd_pause(ngx_rtmp_session_t *s,
        ngx_rtmp_pause_t *v);
+static ngx_int_t ngx_rtmp_cmd_metadata(ngx_rtmp_session_t *s,
+       ngx_rtmp_metadata_t *v);
 
 
 static ngx_int_t ngx_rtmp_cmd_stream_begin(ngx_rtmp_session_t *s,
@@ -54,6 +56,7 @@ ngx_rtmp_publish_pt         ngx_rtmp_publish;
 ngx_rtmp_play_pt            ngx_rtmp_play;
 ngx_rtmp_seek_pt            ngx_rtmp_seek;
 ngx_rtmp_pause_pt           ngx_rtmp_pause;
+ngx_rtmp_metadata_pt        ngx_rtmp_metadata;
 
 
 ngx_rtmp_stream_begin_pt    ngx_rtmp_stream_begin;
@@ -705,6 +708,40 @@ ngx_rtmp_cmd_disconnect(ngx_rtmp_session_t *s)
     return ngx_rtmp_delete_stream(s, NULL);
 }
 
+static ngx_int_t
+ngx_rtmp_cmd_metadata_init(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+        ngx_chain_t *in)
+{
+    static ngx_rtmp_metadata_t     v;
+
+    static ngx_rtmp_amf_elt_t  in_elts[] = {
+    };
+
+    ngx_memzero(&v, sizeof(v));
+
+    if (ngx_rtmp_receive_amf(s, in, in_elts,
+                             sizeof(in_elts) / sizeof(in_elts[0])))
+    {
+        return NGX_ERROR;
+    }
+    
+    // TODO: check command name 'onMetadata'
+
+    /*ngx_log_error(NGX_LOG_INFO, s->connection->log, 0,
+                  "metadata: name='%s' args='%s' silent=%i",
+                  v.name, v.args,
+                  (ngx_int_t) v.silent);*/
+
+
+    return ngx_rtmp_metadata(s, &v);
+}
+
+static ngx_int_t
+ngx_rtmp_cmd_metadata(ngx_rtmp_session_t *s,
+            ngx_rtmp_metadata_t *v)
+{
+  return NGX_OK;
+}
 
 static ngx_int_t
 ngx_rtmp_cmd_seek_init(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
@@ -797,6 +834,7 @@ static ngx_rtmp_amf_handler_t ngx_rtmp_cmd_map[] = {
     { ngx_string("seek"),               ngx_rtmp_cmd_seek_init              },
     { ngx_string("pause"),              ngx_rtmp_cmd_pause_init             },
     { ngx_string("pauseraw"),           ngx_rtmp_cmd_pause_init             },
+    { ngx_string("@setDataFrame"),      ngx_rtmp_cmd_metadata_init          },
 };
 
 
@@ -845,6 +883,7 @@ ngx_rtmp_cmd_postconfiguration(ngx_conf_t *cf)
     ngx_rtmp_play = ngx_rtmp_cmd_play;
     ngx_rtmp_seek = ngx_rtmp_cmd_seek;
     ngx_rtmp_pause = ngx_rtmp_cmd_pause;
+    ngx_rtmp_metadata = ngx_rtmp_cmd_metadata;
 
     ngx_rtmp_stream_begin = ngx_rtmp_cmd_stream_begin;
     ngx_rtmp_stream_eof = ngx_rtmp_cmd_stream_eof;

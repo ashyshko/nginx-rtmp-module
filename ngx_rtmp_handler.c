@@ -216,8 +216,12 @@ ngx_rtmp_recv(ngx_event_t *rev)
         return;
     }
 
-    for( ;; ) {
+    // don't receive new data until metadata response received
+    if( s->waiting_metadata_response ) {
+        return;
+    }
 
+    for( ;; ) {
         st = &s->in_streams[s->in_csid];
 
         /* allocate new buffer */
@@ -291,6 +295,11 @@ ngx_rtmp_recv(ngx_event_t *rev)
                     return;
                 }
             }
+        }
+
+        // don't process already received data until metadata response received
+        if( s->waiting_metadata_response ) {
+            return;
         }
 
         old_pos = NULL;

@@ -20,6 +20,7 @@ static ngx_rtmp_publish_pt                      next_publish;
 static ngx_rtmp_play_pt                         next_play;
 static ngx_rtmp_close_stream_pt                 next_close_stream;
 static ngx_rtmp_record_done_pt                  next_record_done;
+static ngx_rtmp_metadata_pt                     next_metadata;
 
 
 static char *ngx_rtmp_notify_on_srv_event(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -55,6 +56,7 @@ enum {
     NGX_RTMP_NOTIFY_DONE,
     NGX_RTMP_NOTIFY_RECORD_DONE,
     NGX_RTMP_NOTIFY_UPDATE,
+    NGX_RTMP_NOTIFY_METADATA,
     NGX_RTMP_NOTIFY_APP_MAX
 };
 
@@ -114,6 +116,13 @@ static ngx_command_t  ngx_rtmp_notify_commands[] = {
       NULL },
 
     { ngx_string("on_publish"),
+      NGX_RTMP_MAIN_CONF|NGX_RTMP_SRV_CONF|NGX_RTMP_APP_CONF|NGX_CONF_TAKE1,
+      ngx_rtmp_notify_on_app_event,
+      NGX_RTMP_APP_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("on_metadata"),
       NGX_RTMP_MAIN_CONF|NGX_RTMP_SRV_CONF|NGX_RTMP_APP_CONF|NGX_CONF_TAKE1,
       ngx_rtmp_notify_on_app_event,
       NGX_RTMP_APP_CONF_OFFSET,
@@ -802,6 +811,47 @@ ngx_rtmp_notify_record_done_create(ngx_rtmp_session_t *s, void *arg,
 }
 
 
+static ngx_chain_t *
+ngx_rtmp_notify_metadata_create(ngx_rtmp_session_t *s, void *arg,
+        ngx_pool_t *pool)
+{
+    ngx_rtmp_metadata_t           *v = arg;
+    ngx_rtmp_notify_ctx_t         *ctx;
+
+    ngx_chain_t                    *pl;
+    ngx_buf_t                      *b;
+    size_t                          name_len;
+
+    pl = ngx_alloc_chain_link(pool);
+    if (pl == NULL) {
+        return NULL;
+    }
+
+    ctx = ngx_rtmp_get_module_ctx(s, ngx_rtmp_notify_module);
+
+    name_len = ngx_strlen(ctx->name);
+
+    b = ngx_create_temp_buf(pool,
+                            sizeof("&call=metadata") +
+                            sizeof("&name=") + name_len * 3 + 1);
+    if (b == NULL) {
+        return NULL;
+    }
+
+    pl->buf = b;
+    pl->next = NULL;
+
+    b->last = ngx_cpymem(b->last, (u_char*) "&call=metadata",
+                         sizeof("&call=metadata") - 1);
+
+    b->last = ngx_cpymem(b->last, (u_char*) "&name=", sizeof("&name=") - 1);
+    b->last = (u_char*) ngx_escape_uri(b->last, ctx->name, name_len,
+                                       NGX_ESCAPE_ARGS);
+
+    return ngx_rtmp_notify_create_request(s, pool, NGX_RTMP_NOTIFY_METADATA, pl);
+}
+
+
 static ngx_int_t
 ngx_rtmp_notify_parse_http_retcode(ngx_rtmp_session_t *s,
         ngx_chain_t *in)
@@ -1164,6 +1214,88 @@ next:
 
 
 static ngx_int_t
+ngx_rtmp_notify_metadata_handle(ngx_rtmp_session_t *s,
+        void *arg, ngx_chain_t *in)
+{
+    ngx_rtmp_notify_ctx_t      *ctx;
+    ngx_rtmp_metadata_t        *v = arg;
+    ngx_int_t                   rc;
+    ngx_str_t                   local_name;
+    ngx_rtmp_relay_target_t     target;
+    ngx_url_t                  *u;
+    ngx_rtmp_notify_app_conf_t *nacf;
+    u_char                      name[NGX_RTMP_MAX_NAME];
+
+    static ngx_str_t    location = ngx_string("location");
+
+    rc = ngx_rtmp_notify_parse_http_retcode(s, in);
+
+    if (rc == NGX_ERROR) {
+        s->waiting_metadata_response = 0;
+        return NGX_ERROR;
+    }
+
+    if (rc != NGX_AGAIN) {
+        goto next;
+    }
+
+    /* HTTP 3xx */
+
+    ngx_log_debug0(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                   "notify: metadata redirect received");
+
+    rc = ngx_rtmp_notify_parse_http_header(s, in, &location, name,
+                                           sizeof(name) - 1);
+    if (rc <= 0) {
+        goto next;
+    }
+
+    if (ngx_strncasecmp(name, (u_char *) "rtmp://", 7)) {
+        goto next;
+    }
+
+    /* push */
+
+    ctx = ngx_rtmp_get_module_ctx(s, ngx_rtmp_notify_module);
+
+    nacf = ngx_rtmp_get_module_app_conf(s, ngx_rtmp_notify_module);
+    if (nacf->relay_redirect) {
+        ngx_rtmp_notify_set_name(ctx->name, NGX_RTMP_MAX_NAME, name, (size_t) rc);
+    }
+
+    ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                  "metadata: push '%s' to '%*s'", ctx->name, rc, name);
+
+    local_name.data = ctx->name;
+    local_name.len = ngx_strlen(ctx->name);
+
+    ngx_memzero(&target, sizeof(target));
+
+    u = &target.url;
+    u->url = local_name;
+    u->url.data = name + 7;
+    u->url.len = rc - 7;
+    u->default_port = 1935;
+    u->uri_part = 1;
+    u->no_resolve = 1; /* want ip here */
+
+    if (ngx_parse_url(s->connection->pool, u) != NGX_OK) {
+        ngx_log_error(NGX_LOG_INFO, s->connection->log, 0,
+                      "metadata: push failed '%V'", &local_name);
+        s->waiting_metadata_response = 0;
+        return NGX_ERROR;
+    }
+
+    ngx_rtmp_relay_push(s, &local_name, &target);
+
+next:
+    s->waiting_metadata_response = 0;
+
+    return next_metadata(s, v);
+}
+
+
+static ngx_int_t
 ngx_rtmp_notify_update_handle(ngx_rtmp_session_t *s,
         void *arg, ngx_chain_t *in)
 {
@@ -1518,6 +1650,47 @@ next:
     return next_record_done(s, v);
 }
 
+static ngx_int_t
+ngx_rtmp_notify_metadata(ngx_rtmp_session_t *s, ngx_rtmp_metadata_t *v)
+{
+    ngx_rtmp_notify_app_conf_t     *nacf;
+    ngx_rtmp_netcall_init_t         ci;
+    ngx_url_t                      *url;
+
+    if (s->auto_pushed) {
+        goto next;
+    }
+
+    nacf = ngx_rtmp_get_module_app_conf(s, ngx_rtmp_notify_module);
+    if (nacf == NULL) {
+        goto next;
+    }
+
+    url = nacf->url[NGX_RTMP_NOTIFY_METADATA];
+
+    if (url == NULL) {
+        goto next;
+    }
+
+    ngx_log_error(NGX_LOG_INFO, s->connection->log, 0,
+                  "notify: metadata '%V'", &url->url);
+
+    ngx_memzero(&ci, sizeof(ci));
+
+    ci.url = url;
+    ci.create = ngx_rtmp_notify_metadata_create;
+    ci.handle = ngx_rtmp_notify_metadata_handle;
+    ci.arg = v;
+    ci.argsize = sizeof(*v);
+
+    s->waiting_metadata_response = 1;
+
+    return ngx_rtmp_netcall_create(s, &ci);
+
+next:
+    return next_metadata(s, v);
+}
+
 
 static ngx_int_t
 ngx_rtmp_notify_done(ngx_rtmp_session_t *s, char *cbname, ngx_uint_t url_idx)
@@ -1657,6 +1830,10 @@ ngx_rtmp_notify_on_app_event(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             n = NGX_RTMP_NOTIFY_PUBLISH;
             break;
 
+        case sizeof("on_metadata") - 1:
+            n = NGX_RTMP_NOTIFY_METADATA;
+            break;
+
         case sizeof("on_play_done") - 1:
             n = NGX_RTMP_NOTIFY_PLAY_DONE;
             break;
@@ -1728,6 +1905,9 @@ ngx_rtmp_notify_postconfiguration(ngx_conf_t *cf)
 
     next_record_done = ngx_rtmp_record_done;
     ngx_rtmp_record_done = ngx_rtmp_notify_record_done;
+
+    next_metadata = ngx_rtmp_metadata;
+    ngx_rtmp_metadata = ngx_rtmp_notify_metadata;
 
     return NGX_OK;
 }
